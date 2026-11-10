@@ -3,6 +3,9 @@
 
 Usage:  python3 tools/build.py OUT_DIR [--old-index old/index.json] [--only HU,AT]
 
+One worldwide Overpass query; the country of each machine comes from the Natural Earth 1:10m country
+borders (public domain; NE_FILE=path uses a local copy).
+
 Output:
   OUT_DIR/index.json   – list of countries with machine counts, checksum and last-change date
   OUT_DIR/<CC>.json    – the machines of one country (ISO 3166-1 alpha-2 code)
@@ -60,17 +63,86 @@ def overpass(query, attempts=6):
     raise RuntimeError("Overpass failed: %s" % last)
 
 
-def countries():
-    q = '[out:json][timeout:300];area["ISO3166-1"~"^[A-Z]{2}$"]["admin_level"="2"];out tags;'
-    res = {}
-    for el in overpass(q)["elements"]:
-        t = el.get("tags", {})
-        code = t.get("ISO3166-1")
-        if not code or code in res:
+NE_URL = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_admin_0_countries.geojson"
+
+
+def load_borders(path=None):
+    """Country polygons (Natural Earth 1:10m, public domain): [(code, name, names, bbox, rings)]."""
+    if path and os.path.exists(path):
+        gj = json.load(open(path, encoding="utf-8"))
+    else:
+        req = urllib.request.Request(NE_URL, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=300) as r:
+            gj = json.loads(r.read())
+    out = []
+    for f in gj["features"]:
+        pr = f["properties"]
+        code = pr.get("ISO_A2_EH") or pr.get("ISO_A2")
+        if not code or len(code) != 2 or not code.isalpha():
             continue
-        names = {l: t["name:" + l] for l in LANGS if t.get("name:" + l)}
-        res[code] = {"name": t.get("name:en") or t.get("name") or code, "names": names}
-    return res
+        g = f["geometry"]
+        polys = g["coordinates"] if g["type"] == "MultiPolygon" else [g["coordinates"]]
+        rings = []
+        for poly in polys:
+            for i, ring in enumerate(poly):
+                xs = [pt[0] for pt in ring]
+                ys = [pt[1] for pt in ring]
+                rings.append((i == 0, (min(xs), min(ys), max(xs), max(ys)), ring))
+        if not rings:
+            continue
+        xs = [r[1][0] for r in rings] + [r[1][2] for r in rings]
+        ys = [r[1][1] for r in rings] + [r[1][3] for r in rings]
+        names = {l: pr["NAME_" + l.upper()] for l in LANGS if pr.get("NAME_" + l.upper())}
+        out.append((code.upper(), pr.get("NAME_EN") or pr.get("NAME") or code, names, (min(xs), min(ys), max(xs), max(ys)), rings))
+    return out
+
+
+def _in_ring(x, y, ring):
+    inside = False
+    j = len(ring) - 1
+    for i in range(len(ring)):
+        xi, yi = ring[i][0], ring[i][1]
+        xj, yj = ring[j][0], ring[j][1]
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def _seg_d2(x, y, a, b):
+    ax, ay, bx, by = a[0], a[1], b[0], b[1]
+    dx, dy = bx - ax, by - ay
+    L = dx * dx + dy * dy
+    t = 0.0 if L == 0 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / L))
+    px, py = ax + t * dx - x, ay + t * dy - y
+    return px * px + py * py
+
+
+def country_of(borders, lat, lon):
+    x, y = lon, lat
+    for code, _n, _ns, bb, rings in borders:
+        if not (bb[0] <= x <= bb[2] and bb[1] <= y <= bb[3]):
+            continue
+        # Outer rings add, holes (lakes, enclaves) remove.
+        inside = False
+        for outer, rb, ring in rings:
+            if rb[0] <= x <= rb[2] and rb[1] <= y <= rb[3] and _in_ring(x, y, ring):
+                inside = outer
+        if inside:
+            return code
+    # Piers, ships, small islands: the nearest country border within ~30 km.
+    best, bestd = None, 0.3 ** 2
+    for code, _n, _ns, bb, rings in borders:
+        if not (bb[0] - 0.3 <= x <= bb[2] + 0.3 and bb[1] - 0.3 <= y <= bb[3] + 0.3):
+            continue
+        for _o, rb, ring in rings:
+            if not (rb[0] - 0.3 <= x <= rb[2] + 0.3 and rb[1] - 0.3 <= y <= rb[3] + 0.3):
+                continue
+            for i in range(1, len(ring)):
+                d = _seg_d2(x, y, ring[i - 1], ring[i])
+                if d < bestd:
+                    best, bestd = code, d
+    return best
 
 
 def kind(vending):
@@ -82,11 +154,8 @@ def kind(vending):
     return None
 
 
-def machines(code):
-    q = (
-        '[out:json][timeout:300];area["ISO3166-1"="%s"]["admin_level"="2"]->.a;'
-        'nwr(area.a)["vending"~"%s",i];out tags center meta;' % (code, VENDING_QUERY)
-    )
+def machines_world():
+    q = '[out:json][timeout:900];nwr["vending"~"%s",i];out tags center meta;' % VENDING_QUERY
     items = []
     for el in overpass(q)["elements"]:
         t = el.get("tags", {})
@@ -129,32 +198,30 @@ def main():
     os.makedirs(out, exist_ok=True)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    cs = countries()
-    print("országok:", len(cs), flush=True)
+    borders = load_borders(os.environ.get("NE_FILE"))
+    print("országhatárok:", len(borders), flush=True)
+    names = {c[0]: (c[1], c[2]) for c in borders}
+    world = machines_world()
+    print("automaták a világon:", len(world), flush=True)
+    by = {}
+    lost = 0
+    for it in world:
+        code = it.pop("cc", None) or country_of(borders, it["lat"], it["lon"])
+        if not code:
+            lost += 1
+            continue
+        by.setdefault(code, []).append(it)
+    print("ország nélkül (nyílt tengeren):", lost, flush=True)
+
     index = []
     total = 0
     failed = []
-    for code in sorted(cs):
+    for code in sorted(by):
         if only and code not in only:
             continue
-        try:
-            items = machines(code)
-        except Exception as e:  # noqa: BLE001
-            print("%s HIBA: %s" % (code, e), flush=True)
-            failed.append(code)
-            # Keep the previous file for this country (the workflow re-uses the old asset).
-            if old_index and code in old_index:
-                index.append(old_index[code])
-                total += old_index[code]["count"]
-            continue
-        time.sleep(1.5)
-        if not items:
-            continue
-        doc = {
-            "code": code,
-            "name": cs[code]["name"],
-            "items": items,
-        }
+        items = by[code]
+        name, cnames = names.get(code, (code, {}))
+        doc = {"code": code, "name": name, "items": items}
         body = json.dumps(doc, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         sha = hashlib.sha1(body).hexdigest()
         updated = now
@@ -167,10 +234,10 @@ def main():
         open(os.path.join(out, code + ".json"), "wb").write(body)
         lats = [i["lat"] for i in items]
         lons = [i["lon"] for i in items]
-        entry = {
+        index.append({
             "code": code,
-            "name": cs[code]["name"],
-            "names": cs[code]["names"],
+            "name": name,
+            "names": cnames,
             "count": len(items),
             "pressed": sum(1 for i in items if i["kind"] == "pressed"),
             "medal": sum(1 for i in items if i["kind"] == "medal"),
@@ -178,10 +245,9 @@ def main():
             "sha1": sha,
             "updated": updated,
             "bbox": [min(lats), min(lons), max(lats), max(lons)],
-        }
-        index.append(entry)
+        })
         total += len(items)
-        print("%s %-30s %5d" % (code, cs[code]["name"][:30], len(items)), flush=True)
+        print("%s %-30s %5d" % (code, name[:30], len(items)), flush=True)
 
     index.sort(key=lambda c: c["code"])
     idx = {
@@ -196,8 +262,9 @@ def main():
     json.dump(idx, open(os.path.join(out, "index.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print("összesen: %d automata, %d ország; sikertelen: %s" % (total, len(index), ",".join(failed) or "-"))
     open(os.path.join(out, "failed.txt"), "w").write("\n".join(failed))
-    # Too many failures = Overpass trouble: better keep the old release than publish a half one.
-    if len(failed) > 20:
+    # Almost nothing found = Overpass trouble: better keep the old release than publish an empty one.
+    if old_index and total < 0.5 * sum(c["count"] for c in old_index.values()):
+        print("::error::Gyanúsan kevés automata (%d) – a régi kiadás marad." % total)
         sys.exit(1)
 
 

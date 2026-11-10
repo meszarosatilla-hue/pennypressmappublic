@@ -7,7 +7,7 @@ Pressed-coin (elongated coin / „préselt érme”) and souvenir-medal machines
 - Updated every Monday by GitHub Actions (`.github/workflows/data.yml`, `tools/build.py`); can also be started by hand (Actions → Run workflow).
 
 ## What is included
-Every OpenStreetMap object whose `vending` tag mentions an elongated/pressed coin (`vending=elongated_coin`, the documented tag) or a souvenir medal. `kind` is `pressed` or `medal`. All tags are kept except source/import/fixme bookkeeping. `edited` is the date of the last edit in OpenStreetMap.
+One worldwide Overpass query; the country comes from the Natural Earth 1:10m borders (public domain). Every OpenStreetMap object whose `vending` tag mentions an elongated/pressed coin (`vending=elongated_coin`, the documented tag) or a souvenir medal. `kind` is `pressed` or `medal`. All tags are kept except source/import/fixme bookkeeping. `edited` is the date of the last edit in OpenStreetMap.
 
 ## Missing or wrong machine?
 Fix it in OpenStreetMap (e.g. with StreetComplete, Every Door, OsmAnd, or the openstreetmap.org editor): `amenity=vending_machine` + `vending=elongated_coin`, optionally `coin:design_count`, `coin:type`, `charge`, `opening_hours`, `operator`, `level`, `description`. The next weekly update brings it into the app.
