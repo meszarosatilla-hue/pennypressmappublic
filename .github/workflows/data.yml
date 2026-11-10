@@ -1,0 +1,56 @@
+name: Térképadatok frissítése (OpenStreetMap → országonkénti fájlok)
+
+on:
+  schedule:
+    - cron: '17 3 * * 1'   # hetente, hétfőn hajnalban
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['tools/**', '.github/workflows/data.yml']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: data
+  cancel-in-progress: false
+
+jobs:
+  data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Előző kiadás letöltése (változásfigyeléshez és tartaléknak)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p old
+          gh release download data --dir old --pattern '*.json' || echo "Még nincs korábbi kiadás."
+
+      - name: Adatok lekérése az Overpass API-ból
+        run: python3 tools/build.py out --old-index old/index.json
+
+      - name: "Sikertelen országok – a régi fájl marad"
+        run: |
+          for c in $(cat out/failed.txt); do
+            [ -f "old/$c.json" ] && cp "old/$c.json" "out/$c.json" && echo "régi megtartva: $c"
+          done
+          rm -f out/failed.txt
+          ls -la out | head -50
+
+      - name: Közzététel (data kiadás)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view data >/dev/null 2>&1; then
+            gh release create data --title "Térképadatok / Map data" \
+              --notes "Préselt érme automaták az OpenStreetMapből, országonként. Pressed-coin machines from OpenStreetMap, per country. © OpenStreetMap contributors, ODbL 1.0."
+          fi
+          gh release upload data out/*.json --clobber
+          # Országok, amelyekből már nincs adat: régi fájl törlése
+          for a in $(gh release view data --json assets --jq '.assets[].name'); do
+            [ -f "out/$a" ] || gh release delete-asset data "$a" --yes
+          done
+          gh release edit data --notes "Préselt érme automaták az OpenStreetMapből, országonként (frissítve: $(date -u +%Y-%m-%d)). Pressed-coin machines from OpenStreetMap, per country. © OpenStreetMap contributors, ODbL 1.0. Index: https://github.com/${{ github.repository }}/releases/download/data/index.json"
