@@ -1,0 +1,13 @@
+name: Felderítés (egyszeri)
+on:
+  workflow_dispatch:
+    inputs:
+      country:
+        default: HU
+jobs:
+  explore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - run: python3 tools/explore.py ${{ github.event.inputs.country }}
