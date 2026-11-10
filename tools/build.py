@@ -33,6 +33,13 @@ UA = "pennypressmap-data/1.0 (+https://github.com/meszarosatilla-hue/pennypressm
 VENDING_QUERY = "elongated|pressed|penny|coin_press|souvenir_coin|souvenir_medal|medal|commemorative_coin|tourist_coin|token_press"
 PRESSED = re.compile(r"elongated|(?<![a-z])pressed|penny|coin_press|token_press")  # not "compressed_air"
 MEDAL = re.compile(r"souvenir_coin|souvenir_medal|medal|commemorative_coin|tourist_coin")
+# Machines tagged only in free text (name / description / model), in several languages:
+# "érmepréselő", "pénzérme-nyomó", "préselt érme", "Münzpresse", "penny press" → pressed;
+# "emlékérme", "érem minta", "Medaille", "médaille" → medal.
+TEXT_QUERY = ("rmeprés|rmepres|rme-prés|rmenyom|rme-nyom|préselt|preselt|emlékérm|emlekerm|érem minta|"
+              "münzpress|münzpräg|pressed coin|pressed penny|penny press|elongated|souvenir coin|souvenir medal|medaille|médaille")
+TEXT_PRESSED = re.compile(r"rmeprés|rmepres|rme-prés|rmenyom|rme-nyom|préselt|preselt|münzpress|pressed|penny|elongated", re.I)
+TEXT_MEDAL = re.compile(r"emlékérm|emlekerm|érem|medaille|médaille|medal|souvenir coin|münzpräg", re.I)
 
 # Tags that are of no use in the app.
 DROP = re.compile(r"^(source(:.*)?|created_by|fixme|FIXME|note:.*|import(:.*)?|attribution|is_in.*|tiger:.*|osak:.*)$")
@@ -145,21 +152,35 @@ def country_of(borders, lat, lon):
     return best
 
 
-def kind(vending):
-    v = vending.lower()
+def kind(tags):
+    v = tags.get("vending", "").lower()
     if PRESSED.search(v):
         return "pressed"
     if MEDAL.search(v):
         return "medal"
+    text = " ".join(tags.get(k, "") for k in ("name", "description", "model", "note"))
+    if v and v not in ("coin", "souvenir", "souvenirs"):
+        return None  # a vending machine for something else that merely mentions coins
+    if TEXT_PRESSED.search(text):
+        return "pressed"
+    # vending=coin in Hungary, Austria …: the machine mints a souvenir medal ("emlékérme")
+    if v == "coin" or TEXT_MEDAL.search(text):
+        return "medal" if v == "coin" or tags.get("amenity") == "vending_machine" else None
     return None
 
 
 def machines_world():
-    q = '[out:json][timeout:900];nwr["vending"~"%s",i];out tags center meta;' % VENDING_QUERY
+    q = ('[out:json][timeout:900];('
+         'nwr["vending"~"%s",i];'
+         'nwr["amenity"="vending_machine"]["vending"="coin"];'
+         'nwr["amenity"="vending_machine"]["description"~"%s",i];'
+         'nwr["amenity"="vending_machine"]["name"~"%s",i];'
+         'nwr["amenity"="vending_machine"]["model"~"%s",i];'
+         ');out tags center meta;') % (VENDING_QUERY, TEXT_QUERY, TEXT_QUERY, TEXT_QUERY)
     items = []
     for el in overpass(q)["elements"]:
         t = el.get("tags", {})
-        k = kind(t.get("vending", ""))
+        k = kind(t)
         if not k:
             continue
         if "lat" in el:
