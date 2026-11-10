@@ -31,7 +31,7 @@ UA = "pennypressmap-data/1.0 (+https://github.com/meszarosatilla-hue/pennypressm
 
 # Everything that can mean "a machine that presses a coin" or "a machine that mints a souvenir medal".
 VENDING_QUERY = "elongated|pressed|penny|coin_press|souvenir_coin|souvenir_medal|medal|commemorative_coin|tourist_coin|token_press"
-PRESSED = re.compile(r"elongated|pressed|penny|coin_press|token_press")
+PRESSED = re.compile(r"elongated|(?<![a-z])pressed|penny|coin_press|token_press")  # not "compressed_air"
 MEDAL = re.compile(r"souvenir_coin|souvenir_medal|medal|commemorative_coin|tourist_coin")
 
 # Tags that are of no use in the app.
@@ -200,7 +200,10 @@ def main():
 
     borders = load_borders(os.environ.get("NE_FILE"))
     print("országhatárok:", len(borders), flush=True)
-    names = {c[0]: (c[1], c[2]) for c in borders}
+    # A country can have several parts (France + Clipperton …): the name comes from the largest one.
+    names = {}
+    for code, name, cnames, bb, _r in sorted(borders, key=lambda c: (c[3][2] - c[3][0]) * (c[3][3] - c[3][1])):
+        names[code] = (name, cnames)
     world = machines_world()
     print("automaták a világon:", len(world), flush=True)
     by = {}
