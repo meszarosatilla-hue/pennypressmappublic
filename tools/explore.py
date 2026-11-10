@@ -1,27 +1,34 @@
 #!/usr/bin/env python3
 """One-off: which other OpenStreetMap taggings could be pressed-coin machines in a country (default HU)."""
-import collections, json, sys
+import collections, json, re, sys
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from build import overpass  # noqa: E402
 
 cc = sys.argv[1] if len(sys.argv) > 1 else "HU"
-area = '[out:json][timeout:600];area["ISO3166-1"="%s"]["admin_level"="2"]->.a;' % cc
+area = '[out:json][timeout:300];area["ISO3166-1"="%s"]["admin_level"="2"]->.a;' % cc
+WORDS = re.compile(r"érme|erme|préselt|presel|emlékérem|emlékérme|pénzpréselő|souvenir|penny|elongated|münz|präg|medail|medal|coin", re.I)
 
-j = overpass(area + 'nwr(area.a)["vending"];out tags;')
-c = collections.Counter(el["tags"].get("vending") for el in j["elements"])
-print("== vending values (%d objects)" % len(j["elements"]))
-for v, n in c.most_common(80):
+# All vending machines (cheap: tag-indexed)
+j = overpass(area + 'nwr(area.a)["amenity"="vending_machine"];out tags center;')
+print("== vending machines: %d" % len(j["elements"]))
+c = collections.Counter(el["tags"].get("vending", "<none>") for el in j["elements"])
+for v, n in c.most_common(100):
     print("  %5d %s" % (n, v))
+print("== vending machines with coin-ish words anywhere, but not vending=elongated_coin")
+for el in j["elements"]:
+    t = el["tags"]
+    if t.get("vending") == "elongated_coin":
+        continue
+    if WORDS.search(" ".join("%s=%s" % kv for kv in t.items())):
+        print("  %s%s %s" % (el["type"][0], el["id"], json.dumps(t, ensure_ascii=False)[:500]))
+print("== vending machines without vending tag (sample)")
+for el in [e for e in j["elements"] if "vending" not in e["tags"]][:80]:
+    print("  %s%s %s" % (el["type"][0], el["id"], json.dumps(el["tags"], ensure_ascii=False)[:300]))
 
-WORDS = "érme|ermepr|préselt|emlékérem|emlékérme|emlekerme|pénzpréselő|souvenir.?coin|penny|elongated|münzpr|prägeautomat|medail|medal"
-for key in ["name", "description", "note", "brand", "operator", "model", "shop", "souvenir"]:
-    j = overpass(area + 'nwr(area.a)["%s"~"%s",i];out tags center;' % (key, WORDS))
-    print("== %s ~ words: %d" % (key, len(j["elements"])))
-    for el in j["elements"][:60]:
-        t = el["tags"]
-        print("  %s%s %s" % (el["type"][0], el["id"], json.dumps({k: t[k] for k in list(t)[:14]}, ensure_ascii=False)))
-
-j = overpass(area + 'nwr(area.a)[~"elongated|penny|pressed_coin|souvenir_coin|coin_press"~"."];out tags center;')
-print("== keys with elongated/penny: %d" % len(j["elements"]))
-for el in j["elements"][:60]:
-    print("  %s%s %s" % (el["type"][0], el["id"], json.dumps(el["tags"], ensure_ascii=False)[:400]))
+# Souvenir shops / attractions with coin words
+j = overpass(area + 'nwr(area.a)["shop"="souvenir"];out tags center;')
+print("== souvenir shops: %d" % len(j["elements"]))
+for el in j["elements"]:
+    t = el["tags"]
+    if WORDS.search(" ".join("%s=%s" % kv for kv in t.items() if not kv[0].startswith("payment"))):
+        print("  %s%s %s" % (el["type"][0], el["id"], json.dumps(t, ensure_ascii=False)[:400]))
